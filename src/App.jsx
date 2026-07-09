@@ -2,60 +2,96 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { UserPlus, Search, Edit2, Trash2, MapPin, X } from 'lucide-react';
 import DashboardStats from './components/DashboardStats';
 import MemberForm from './components/MemberForm';
-
-const INITIAL_MEMBERS = [
-    { id: '65001', name: 'สมชาย รักเรียน', nickname: 'ชาย', role: 'หัวหน้าห้อง', address: '123 หมู่ 1 ถ.สุขุมวิท กทม. 10110' },
-    { id: '65002', name: 'สมหญิง ขยันดี', nickname: 'หญิง', role: 'นักเรียนทั่วไป', address: '45/2 หมู่ 3 ต.บางรัก กทม. 10500' },
-    { id: '65003', name: 'มานะ อดทน', nickname: 'นะ', role: 'เหรัญญิก', address: '789 ซอยพัฒนา 1 กทม. 10200' }
-];
+import { supabase } from './supabaseClient';
 
 function App() {
-    const [members, setMembers] = useState(() => {
-        const saved = localStorage.getItem('classMembers');
-        if (saved) {
-            try {
-                return JSON.parse(saved);
-            } catch (e) {
-                return INITIAL_MEMBERS;
-            }
-        }
-        return INITIAL_MEMBERS;
-    });
-
+    const [members, setMembers] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [isFormOpen, setIsFormOpen] = useState(false);
     const [editingMember, setEditingMember] = useState(null);
 
+    // Fetch members on component mount
     useEffect(() => {
-        localStorage.setItem('classMembers', JSON.stringify(members));
-    }, [members]);
+        fetchMembers();
+    }, []);
+
+    const fetchMembers = async () => {
+        setIsLoading(true);
+        const { data, error } = await supabase
+            .from('members')
+            .select('*')
+            .order('created_at', { ascending: false });
+        
+        if (error) {
+            console.error('Error fetching members:', error);
+            // Ignore error gracefully (might be missing configuration)
+        } else {
+            setMembers(data || []);
+        }
+        setIsLoading(false);
+    };
 
     const filteredMembers = useMemo(() => {
         return members.filter(m => 
             m.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
             m.id.includes(searchTerm) ||
-            m.nickname.toLowerCase().includes(searchTerm.toLowerCase())
+            m.nickname?.toLowerCase().includes(searchTerm.toLowerCase())
         );
     }, [members, searchTerm]);
 
-    const handleAddMember = (member) => {
+    const handleAddMember = async (member) => {
         if (members.some(m => m.id === member.id)) {
             alert('รหัสนักเรียนนี้มีอยู่ในระบบแล้ว');
             return;
         }
-        setMembers([...members, member]);
-        setIsFormOpen(false);
+
+        const { data, error } = await supabase
+            .from('members')
+            .insert([member])
+            .select();
+
+        if (error) {
+            alert('เกิดข้อผิดพลาดในการบันทึกข้อมูล: ' + error.message);
+        } else {
+            setMembers([...members, data[0]]);
+            setIsFormOpen(false);
+        }
     };
 
-    const handleEditMember = (member) => {
-        setMembers(members.map(m => m.id === member.id ? member : m));
-        setIsFormOpen(false);
-        setEditingMember(null);
+    const handleEditMember = async (member) => {
+        const { data, error } = await supabase
+            .from('members')
+            .update({
+                name: member.name,
+                nickname: member.nickname,
+                role: member.role,
+                address: member.address
+            })
+            .eq('id', member.id)
+            .select();
+
+        if (error) {
+            alert('เกิดข้อผิดพลาดในการแก้ไขข้อมูล: ' + error.message);
+        } else {
+            setMembers(members.map(m => m.id === member.id ? data[0] : m));
+            setIsFormOpen(false);
+            setEditingMember(null);
+        }
     };
 
-    const handleDelete = (id, name) => {
+    const handleDelete = async (id, name) => {
         if (confirm(`คุณต้องการลบข้อมูลของ "${name}" ใช่หรือไม่?`)) {
-            setMembers(members.filter(m => m.id !== id));
+            const { error } = await supabase
+                .from('members')
+                .delete()
+                .eq('id', id);
+
+            if (error) {
+                alert('เกิดข้อผิดพลาดในการลบข้อมูล: ' + error.message);
+            } else {
+                setMembers(members.filter(m => m.id !== id));
+            }
         }
     };
 
@@ -81,7 +117,7 @@ function App() {
                 <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
                     <div>
                         <h1 className="text-3xl font-bold mb-2 tracking-tight">ระบบจัดการสมาชิกในชั้นเรียน</h1>
-                        <p className="text-indigo-200">จัดการรายชื่อ บทบาท และที่อยู่ของนักเรียนได้อย่างง่ายดาย (React + Vite)</p>
+                        <p className="text-indigo-200">จัดการรายชื่อ บทบาท และที่อยู่ของนักเรียน (เชื่อมต่อ Supabase)</p>
                     </div>
                     <button 
                         onClick={() => { setEditingMember(null); setIsFormOpen(true); }}
@@ -130,7 +166,16 @@ function App() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
-                                {filteredMembers.length > 0 ? (
+                                {isLoading ? (
+                                    <tr>
+                                        <td colSpan="6" className="py-12 text-center text-gray-500">
+                                            <div className="flex flex-col items-center justify-center gap-3">
+                                                <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                                                <p className="text-lg">กำลังโหลดข้อมูล...</p>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ) : filteredMembers.length > 0 ? (
                                     filteredMembers.map((member) => (
                                         <tr key={member.id} className="hover:bg-indigo-50/30 transition-colors group">
                                             <td className="py-4 px-6 text-gray-700 font-medium">{member.id}</td>
@@ -142,16 +187,16 @@ function App() {
                                                     <span className="font-semibold text-gray-800">{member.name}</span>
                                                 </div>
                                             </td>
-                                            <td className="py-4 px-6 text-gray-600">{member.nickname}</td>
+                                            <td className="py-4 px-6 text-gray-600">{member.nickname || '-'}</td>
                                             <td className="py-4 px-6">
                                                 <span className={`px-3 py-1 text-xs font-medium rounded-full border ${getRoleBadgeColor(member.role)}`}>
-                                                    {member.role}
+                                                    {member.role || 'นักเรียนทั่วไป'}
                                                 </span>
                                             </td>
                                             <td className="py-4 px-6">
                                                 <div className="flex items-start gap-2 text-gray-600 text-sm">
                                                     <MapPin size={16} className="mt-0.5 shrink-0 text-gray-400" />
-                                                    <span className="line-clamp-2" title={member.address}>{member.address}</span>
+                                                    <span className="line-clamp-2" title={member.address}>{member.address || '-'}</span>
                                                 </div>
                                             </td>
                                             <td className="py-4 px-6">
